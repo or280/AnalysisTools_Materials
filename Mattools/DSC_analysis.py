@@ -1,5 +1,6 @@
-from typing import List
+from typing import List, Dict
 import numpy as np
+
 
 def extract_first_three_columns(file_path: str) -> np.ndarray:
     """
@@ -62,10 +63,10 @@ def extract_first_three_columns(file_path: str) -> np.ndarray:
 
 
 def split_heating_cooling_segments(
-    data: np.ndarray,
-    tol: float = 1e-6,
-    delta: float = 3.0,
-    min_points: int = 1,
+        data: np.ndarray,
+        tol: float = 1e-6,
+        delta: float = 3.0,
+        min_points: int = 1,
 ) -> List[np.ndarray]:
     """
     Split DSC data into segments that start when temperature deviates from the global
@@ -85,7 +86,8 @@ def split_heating_cooling_segments(
         List[np.ndarray]: A list of segments as numpy arrays, preserving row order.
     """
     if data.ndim != 2 or data.shape[1] != 3:
-        raise ValueError(f"Expected 2D array with exactly 3 columns [Temperature, Time, Heatflow]; got shape {data.shape}.")
+        raise ValueError(
+            f"Expected 2D array with exactly 3 columns [Temperature, Time, Heatflow]; got shape {data.shape}.")
     n = data.shape[0]
     if n == 0:
         return []
@@ -136,11 +138,13 @@ def split_heating_cooling_segments(
     cut_indices: List[int] = []
     for i in range(1, n):
         # Start heating segment when leaving Tmin by delta upwards
-        if temp[i - 1] < th_low <= temp[i] and (eff_dir[i - 1] > 0 or eff_dir[i - 1] == 0 and eff_dir[min(i, eff_dir.size - 1)] > 0):
+        if temp[i - 1] < th_low <= temp[i] and (
+                eff_dir[i - 1] > 0 or eff_dir[i - 1] == 0 and eff_dir[min(i, eff_dir.size - 1)] > 0):
             cut_indices.append(i)
             continue
         # Start cooling segment when leaving Tmax by delta downwards
-        if temp[i - 1] > th_high >= temp[i] and (eff_dir[i - 1] < 0 or eff_dir[i - 1] == 0 and eff_dir[min(i, eff_dir.size - 1)] < 0):
+        if temp[i - 1] > th_high >= temp[i] and (
+                eff_dir[i - 1] < 0 or eff_dir[i - 1] == 0 and eff_dir[min(i, eff_dir.size - 1)] < 0):
             cut_indices.append(i)
             continue
 
@@ -161,122 +165,7 @@ def split_heating_cooling_segments(
     return segments
 
 
-def plot_temperature_vs_heatflow(
-    segments_or_data: np.ndarray | List[np.ndarray],
-    show: bool = True,
-    save_path: str | None = None,
-    title: str = "Heatflow vs Temperature",
-    xlabel: str = "Temperature",
-    ylabel: str = "Heatflow",
-) -> None:
-    """
-    Plot Heatflow (y) vs Temperature (x).
-    - If given a single Nx3 array, plot it as a single black curve.
-    - If given a list of segments (each Nx3), plot each segment:
-      cooling segments in blues, heating segments in reds, darker for later cycles.
-    """
-    try:
-        import matplotlib.pyplot as plt  # local import to avoid hard dependency when plotting isn't used
-    except ImportError as e:
-        raise ImportError(
-            "matplotlib is required for plotting. Please install it to use plot_temperature_vs_heatflow."
-        ) from e
-
-    # Case 1: single array -> plot once in black
-    if isinstance(segments_or_data, np.ndarray):
-        data = segments_or_data
-        if data.size == 0:
-            raise ValueError("No data to plot: the input array is empty.")
-        if data.ndim != 2 or data.shape[1] < 3:
-            raise ValueError(f"Expected data with at least 3 columns, got shape {data.shape}.")
-
-        x = data[:, 0]
-        y = data[:, 2]
-
-        fig, ax = plt.subplots(figsize=(8, 5))
-        ax.plot(x, y, lw=1.2, color="black")
-        ax.set_xlabel(xlabel)
-        ax.set_ylabel(ylabel)
-        ax.set_title(title)
-        ax.grid(True, alpha=0.3)
-        ax.margins(x=0.01)
-        fig.tight_layout()
-        if save_path:
-            fig.savefig(save_path, dpi=150)
-        if show:
-            plt.show()
-        else:
-            plt.close(fig)
-        return
-
-    # Case 2: list of segments -> color by direction (start vs end temperature)
-    if isinstance(segments_or_data, list):
-        segments = segments_or_data
-        if len(segments) == 0:
-            raise ValueError("No segments to plot: the input list is empty.")
-
-        def seg_dir(seg: np.ndarray) -> int:
-            if seg.shape[0] < 2:
-                return 0
-            d = seg[-1, 0] - seg[0, 0]
-            if d > 0:
-                return 1  # heating
-            if d < 0:
-                return -1  # cooling
-            return 0  # flat/unknown
-
-        directions = [seg_dir(seg) for seg in segments]
-        n_heat = sum(1 for d in directions if d == 1)
-        n_cool = sum(1 for d in directions if d == -1)
-
-        fig, ax = plt.subplots(figsize=(8, 5))
-        reds = plt.cm.Reds
-        blues = plt.cm.Blues
-
-        def shade(cmap, idx: int, total: int):
-            if total <= 1:
-                frac = 0.7
-            else:
-                frac = 0.3 + 0.6 * (idx / (total - 1))  # darker for later cycles
-            return cmap(frac)
-
-        heat_i = 0
-        cool_i = 0
-
-        for seg, d in zip(segments, directions):
-            if seg.ndim != 2 or seg.shape[1] < 3:
-                raise ValueError(f"Each segment must have at least 3 columns, got shape {seg.shape}.")
-            x = seg[:, 0]
-            y = seg[:, 2]
-            if d == 1:
-                color = shade(reds, heat_i, n_heat)
-                heat_i += 1
-            elif d == -1:
-                color = shade(blues, cool_i, n_cool)
-                cool_i += 1
-            else:
-                color = "0.5"  # grey for unknown/flat
-            ax.plot(x, y, lw=1.2, color=color)
-
-        ax.set_xlabel(xlabel)
-        ax.set_ylabel(ylabel)
-        ax.set_title(title)
-        ax.grid(True, alpha=0.3)
-        ax.margins(x=0.01)
-        fig.tight_layout()
-
-        if save_path:
-            fig.savefig(save_path, dpi=150)
-        if show:
-            plt.show()
-        else:
-            plt.close(fig)
-        return
-
-    raise TypeError("segments_or_data must be either a numpy array or a list of numpy arrays (segments).")
-
-
-def calculate_gradient(segment: np.ndarray, noise_threshold: float = 1.0) -> np.ndarray:
+def calculate_gradient(segment: np.ndarray, noise_threshold: float = 0.05) -> np.ndarray:
     """
     Calculates the gradient of Heatflow with respect to Temperature for a given segment.
     This function handles cases where temperature is constant for some data points
@@ -341,7 +230,7 @@ def calculate_gradient(segment: np.ndarray, noise_threshold: float = 1.0) -> np.
         # Scan right from the middle
         for i in range(mid_point, gradient.size - 1):
             if abs(gradient[i + 1] - gradient[i]) > noise_threshold:
-                gradient[i + 1 :] = np.nan
+                gradient[i + 1:] = np.nan
                 break
 
         # Scan left from the middle
@@ -351,69 +240,194 @@ def calculate_gradient(segment: np.ndarray, noise_threshold: float = 1.0) -> np.
                 break
     return gradient
 
-def plot_gradient_vs_temperature(
-    segment: np.ndarray,
-    gradient: np.ndarray,
-    show: bool = True,
-    save_path: str | None = None,
-    title: str = "Heatflow Gradient vs Temperature",
-    xlabel: str = "Temperature",
-    ylabel: str = "d(Heatflow)/d(Temperature)",
-) -> None:
+
+def find_peak_characteristics(
+        segment: np.ndarray,
+        grad_noise_threshold: float = 0.05,
+        baseline_zero_grad_tolerance: float = 0.0002,
+        inflection_search_crop_points: int = 120,
+        plot_for_troubleshooting: bool = False,
+) -> Dict[str, float]:
     """
-    Plots the gradient of heatflow against temperature for a single segment.
-    NaN values in the gradient are automatically handled by matplotlib, creating
-    gaps in the plot.
+    Analyzes a DSC segment to find the start, peak, and end temperatures of a transformation.
+
+    Method:
+    1.  The peak temperature is identified as the point of maximum absolute heatflow.
+    2.  The gradient of heatflow vs. temperature is calculated.
+    3.  The inflection points (start and end of the steepest slope) are found by searching
+        for the maximum gradient on either side of the peak, ignoring a fixed number of
+        points at the segment edges.
+    4.  The baseline start/end points are found by searching outwards from the inflection
+        points for the first point where the gradient returns to (near) zero.
+    5.  Tangents are constructed at both the inflection points and the baseline points.
+    6.  The start and end temperatures are determined by the intersection of the respective
+        peak and baseline tangents.
 
     Args:
-        segment (np.ndarray): The segment data, a 2D array of shape (N, 3) with
-                              columns [Temperature, Time, Heatflow].
-        gradient (np.ndarray): A 1D array of shape (N,) containing the gradient
-                               values corresponding to each point in the segment.
-        show (bool): If True, display the plot.
-        save_path (str | None): If provided, save the plot to this path.
-        title (str): The title of the plot.
-        xlabel (str): The label for the x-axis.
-        ylabel (str): The label for the y-axis.
+        segment (np.ndarray): A 2D array with shape (N, 3) representing a single
+                              heating or cooling segment. Columns: [Temperature, Time, Heatflow].
+        grad_noise_threshold (float): Noise threshold for the gradient calculation.
+        baseline_zero_grad_tolerance (float): Absolute gradient value below which the
+                                              curve is considered to be baseline.
+        inflection_search_crop_points (int): Number of data points to ignore at each
+                                             end of the segment when searching for
+                                             inflection points.
+        plot_for_troubleshooting (bool): If True, generates a plot for debugging.
+
+    Returns:
+        Dict[str, float]: A dictionary with 'T_start', 'T_peak', 'T_end'.
+                          Returns an empty dict if a peak cannot be analyzed.
     """
-    try:
-        import matplotlib.pyplot as plt
-    except ImportError as e:
-        raise ImportError(
-            "matplotlib is required for plotting. Please install it to use this function."
-        ) from e
-
     if not isinstance(segment, np.ndarray) or segment.ndim != 2 or segment.shape[1] != 3:
-        raise ValueError(f"Expected segment to be a 2D numpy array with 3 columns, but got shape {segment.shape}")
-    if not isinstance(gradient, np.ndarray) or gradient.ndim != 1:
-        raise ValueError(f"Expected gradient to be a 1D numpy array, but got shape {gradient.shape}")
-    if segment.shape[0] != gradient.shape[0]:
-        raise ValueError(f"Segment and gradient must have the same number of points, but got {segment.shape[0]} and {gradient.shape[0]}")
-
-    if segment.size == 0:
-        raise ValueError("No data to plot: the input segment is empty.")
+        raise ValueError("Input segment must be a 2D numpy array with 3 columns.")
+    if segment.shape[0] < 10:  # Need enough points for analysis
+        return {}
 
     temperature = segment[:, 0]
+    heatflow = segment[:, 2]
 
-    fig, ax = plt.subplots(figsize=(8, 5))
-    ax.plot(temperature, gradient, lw=1.2, color="purple")
-    ax.set_xlabel(xlabel)
-    ax.set_ylabel(ylabel)
-    ax.set_title(title)
-    ax.grid(True, alpha=0.3)
-    ax.margins(x=0.01)
+    # 1. Find peak middle (max absolute heatflow)
+    peak_idx = np.argmax(np.abs(heatflow))
+    t_peak = temperature[peak_idx]
 
-    fig.tight_layout()
+    # 2. Calculate gradient
+    gradient = calculate_gradient(segment, noise_threshold=grad_noise_threshold)
 
-    if save_path:
-        fig.savefig(save_path, dpi=150)
-    if show:
-        plt.show()
+    # Handle NaNs from gradient calculation by replacing them with 0
+    gradient = np.nan_to_num(gradient, nan=0.0)
+
+    if np.all(gradient == 0):  # Cannot find inflection points if gradient is flat
+        return {}
+
+    # 3. Find inflection points, ignoring a fixed number of points at the segment edges
+    n_points = segment.shape[0]
+
+    # Define search window for the first inflection point (before the peak)
+    start_search_idx_1 = inflection_search_crop_points
+    end_search_idx_1 = peak_idx
+
+    if start_search_idx_1 >= end_search_idx_1:
+        return {}  # Search window is invalid or empty
+
+    grad_before = gradient[start_search_idx_1:end_search_idx_1]
+    if grad_before.size == 0:
+        return {}
+
+    infl_idx_1 = start_search_idx_1 + np.argmax(np.abs(grad_before))
+
+    # Define search window for the second inflection point (after the peak)
+    start_search_idx_2 = peak_idx
+    end_search_idx_2 = n_points - inflection_search_crop_points
+
+    if start_search_idx_2 >= end_search_idx_2:
+        return {}  # Search window is invalid or empty
+
+    grad_after = gradient[start_search_idx_2:end_search_idx_2]
+    if grad_after.size == 0:
+        return {}
+
+    infl_idx_2 = start_search_idx_2 + np.argmax(np.abs(grad_after))
+
+    # 4. Define baseline points by finding where gradient returns to zero
+    baseline_start_idx = -1
+    for i in range(infl_idx_1, -1, -1):
+        if abs(gradient[i]) < baseline_zero_grad_tolerance:
+            baseline_start_idx = i
+            break
+    if baseline_start_idx == -1:  # Fallback to the start of the segment
+        baseline_start_idx = 0
+
+    baseline_end_idx = -1
+    for i in range(infl_idx_2, len(gradient)):
+        if abs(gradient[i]) < baseline_zero_grad_tolerance:
+            baseline_end_idx = i
+            break
+    if baseline_end_idx == -1:  # Fallback to the end of the segment
+        baseline_end_idx = len(gradient) - 1
+
+    # Data for baseline tangents
+    t_bs, h_bs, g_bs = temperature[baseline_start_idx], heatflow[baseline_start_idx], gradient[baseline_start_idx]
+    t_be, h_be, g_be = temperature[baseline_end_idx], heatflow[baseline_end_idx], gradient[baseline_end_idx]
+
+    # 5. Get tangent data for inflection points
+    t1, h1, g1 = temperature[infl_idx_1], heatflow[infl_idx_1], gradient[infl_idx_1]
+    t2, h2, g2 = temperature[infl_idx_2], heatflow[infl_idx_2], gradient[infl_idx_2]
+
+    # 6. Calculate intersection of peak tangents and baseline tangents
+    # Intersection for T_start
+    delta_g_start = g1 - g_bs
+    if abs(delta_g_start) < 1e-6:
+        t_start = t1  # Fallback if tangents are parallel
     else:
-        plt.close(fig)
+        # Intersection of y = g1*(x-t1)+h1 and y = g_bs*(x-t_bs)+h_bs
+        t_start = (h_bs - g_bs * t_bs - (h1 - g1 * t1)) / delta_g_start
+
+    # Intersection for T_end
+    delta_g_end = g2 - g_be
+    if abs(delta_g_end) < 1e-6:
+        t_end = t2  # Fallback if tangents are parallel
+    else:
+        # Intersection of y = g2*(x-t2)+h2 and y = g_be*(x-t_be)+h_be
+        t_end = (h_be - g_be * t_be - (h2 - g2 * t2)) / delta_g_end
+
+    # Plotting for troubleshooting
+    if plot_for_troubleshooting:
+        try:
+            import matplotlib.pyplot as plt
+        except ImportError:
+            print("Matplotlib is required for troubleshooting plots. Please install it.")
+            return {"T_start": t_start, "T_peak": t_peak, "T_end": t_end}
+
+        fig, ax = plt.subplots(figsize=(10, 6))
+
+        # Plot the segment data
+        ax.plot(temperature, heatflow, label="Segment Data", color="blue", zorder=2)
+
+        # Plot baseline tangents
+        bs_tangent_t = np.array([temperature[0], t_start])
+        bs_tangent_h = g_bs * (bs_tangent_t - t_bs) + h_bs
+        ax.plot(bs_tangent_t, bs_tangent_h, color='grey', linestyle='--', label='Start Baseline Tangent', zorder=1)
+
+        be_tangent_t = np.array([t_end, temperature[-1]])
+        be_tangent_h = g_be * (be_tangent_t - t_be) + h_be
+        ax.plot(be_tangent_t, be_tangent_h, color='grey', linestyle='-.', label='End Baseline Tangent', zorder=1)
+
+        # Plot peak tangents
+        peak_tangent_t1 = np.array([t_start, t1])
+        peak_tangent_h1 = g1 * (peak_tangent_t1 - t1) + h1
+        ax.plot(peak_tangent_t1, peak_tangent_h1, 'r-', lw=1.5, label='Peak Tangent (Start)', zorder=3)
+
+        peak_tangent_t2 = np.array([t2, t_end])
+        peak_tangent_h2 = g2 * (peak_tangent_t2 - t2) + h2
+        ax.plot(peak_tangent_t2, peak_tangent_h2, 'g-', lw=1.5, label='Peak Tangent (End)', zorder=3)
+
+        # Mark key points
+        ax.plot(t_bs, h_bs, 'kx', markersize=8, mew=2, label='Baseline Start Point')
+        ax.plot(t_be, h_be, 'k+', markersize=8, mew=2, label='Baseline End Point')
+        ax.plot(t1, h1, 'ro', markersize=6, label='Inflection Point 1', zorder=4)
+        ax.plot(t2, h2, 'go', markersize=6, label='Inflection Point 2', zorder=4)
+
+        # Mark characteristic temperatures
+        ax.axvline(t_start, color='red', linestyle=':', label=f'T_start = {t_start:.2f}', zorder=1)
+        ax.axvline(t_peak, color='purple', linestyle=':', label=f'T_peak = {t_peak:.2f}', zorder=1)
+        ax.axvline(t_end, color='green', linestyle=':', label=f'T_end = {t_end:.2f}', zorder=1)
+
+        ax.set_title("Peak Characteristics Analysis (Tangential Baseline)")
+        ax.set_xlabel("Temperature")
+        ax.set_ylabel("Heatflow")
+        ax.legend()
+        ax.grid(True, alpha=0.3)
+        plt.show()
+
+    return {"T_start": t_start, "T_peak": t_peak, "T_end": t_end}
 
 
 if __name__ == "__main__":
+    from DSC_plotting import (
+        plot_gradient_vs_temperature,
+        plot_temperature_vs_heatflow,
+    )
+
     path = input("Enter path to the txt file: ").strip()
     data_array = extract_first_three_columns(path)
     segments = split_heating_cooling_segments(data_array)
@@ -429,14 +443,27 @@ if __name__ == "__main__":
             print("Plotting raw data.")
             plot_temperature_vs_heatflow(data_array, title="Raw DSC Data")
 
-    # Calculate and plot gradient for the first segment
+    # Analyze and plot for the first segment
     if segments:
-        # Let's analyze the first segment as an example
-        print("\nCalculating and plotting gradient for the first segment...")
+        print("\nAnalyzing the first segment for peak characteristics...")
         first_segment = segments[0]
-        gradient = calculate_gradient(first_segment, noise_threshold=1.0)
+
+        # Find and print peak characteristics
+        peak_info = find_peak_characteristics(first_segment, plot_for_troubleshooting=True)
+        if peak_info:
+            print("\nPeak Characteristics Found:")
+            print(f"  Start Temperature: {peak_info['T_start']:.2f}")
+            print(f"  Peak Temperature:  {peak_info['T_peak']:.2f}")
+            print(f"  End Temperature:   {peak_info['T_end']:.2f}")
+        else:
+            print("\nCould not determine peak characteristics for the first segment.")
+
+        # Calculate and plot gradient
+        '''
+        gradient = calculate_gradient(first_segment, noise_threshold=0.02)
         plot_gradient_vs_temperature(
             first_segment,
             gradient,
             title="Gradient of First Segment",
         )
+        '''
