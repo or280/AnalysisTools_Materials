@@ -4,7 +4,10 @@ import numpy as np
 
 def extract_first_three_columns(file_path: str) -> np.ndarray:
     """
-    Extract the first three data columns from a text file.
+    Extract the first three data columns from a text file and converts time to seconds.
+
+    The expected columns are [Temperature, Time, Heatflow]. This function assumes the
+    time column is in minutes and converts it to seconds upon reading.
 
     Args:
         file_path (str): Path to the input text file
@@ -16,8 +19,8 @@ def extract_first_three_columns(file_path: str) -> np.ndarray:
     - Decimal point is '.'.
 
     Returns:
-        np.ndarray: Array of shape (N, 3) with dtype float containing the first
-                   three columns of numerical data.
+        np.ndarray: Array of shape (N, 3) with dtype float, where the columns are
+                   [Temperature (original unit), Time (in seconds), Heatflow (original unit)].
 
     Examples:
         >>> data = extract_first_three_columns("data.txt")
@@ -50,7 +53,8 @@ def extract_first_three_columns(file_path: str) -> np.ndarray:
 
         try:
             # Convert only the first three columns to floats
-            row = [float(parts[0]), float(parts[1]), float(parts[2])]
+            # Time (column 1) is converted from minutes to seconds by multiplying by 60
+            row = [float(parts[0]), float(parts[1]) * 60, float(parts[2])]
         except ValueError:
             # skip lines that can't be parsed into floats (e.g., residual labels)
             continue
@@ -245,23 +249,24 @@ def find_peak_characteristics(
         segment: np.ndarray,
         grad_noise_threshold: float = 0.05,
         baseline_zero_grad_tolerance: float = 0.0002,
-        inflection_search_crop_points: int = 120,
         plot_for_troubleshooting: bool = False,
 ) -> Dict[str, float]:
     """
-    Analyzes a DSC segment to find the start, peak, and end temperatures of a transformation.
+    Analyzes a DSC segment to find the start, peak, and end temperatures of a transformation,
+    and calculates the area of the peak.
 
     Method:
     1.  The peak temperature is identified as the point of maximum absolute heatflow.
     2.  The gradient of heatflow vs. temperature is calculated.
-    3.  The inflection points (start and end of the steepest slope) are found by searching
-        for the maximum gradient on either side of the peak, ignoring a fixed number of
-        points at the segment edges.
-    4.  The baseline start/end points are found by searching outwards from the inflection
-        points for the first point where the gradient returns to (near) zero.
+    3.  The baseline start/end points are found by searching outwards from the peak for the
+        first point where the gradient returns to (near) zero.
+    4.  The inflection points (start and end of the steepest slope) are found by searching
+        for the maximum gradient magnitude between each baseline point and the peak.
     5.  Tangents are constructed at both the inflection points and the baseline points.
     6.  The start and end temperatures are determined by the intersection of the respective
         peak and baseline tangents.
+    7.  The area of the peak is calculated by integrating the heatflow curve after
+        subtracting a linear baseline constructed between the baseline start and end points.
 
     Args:
         segment (np.ndarray): A 2D array with shape (N, 3) representing a single
@@ -269,13 +274,10 @@ def find_peak_characteristics(
         grad_noise_threshold (float): Noise threshold for the gradient calculation.
         baseline_zero_grad_tolerance (float): Absolute gradient value below which the
                                               curve is considered to be baseline.
-        inflection_search_crop_points (int): Number of data points to ignore at each
-                                             end of the segment when searching for
-                                             inflection points.
         plot_for_troubleshooting (bool): If True, generates a plot for debugging.
 
     Returns:
-        Dict[str, float]: A dictionary with 'T_start', 'T_peak', 'T_end'.
+        Dict[str, float]: A dictionary with 'T_start', 'T_peak', 'T_end', and 'Area'.
                           Returns an empty dict if a peak cannot be analyzed.
     """
     if not isinstance(segment, np.ndarray) or segment.ndim != 2 or segment.shape[1] != 3:
@@ -299,11 +301,36 @@ def find_peak_characteristics(
     if np.all(gradient == 0):  # Cannot find inflection points if gradient is flat
         return {}
 
-    # 3. Find inflection points, ignoring a fixed number of points at the segment edges
-    n_points = segment.shape[0]
+    # 3. Find baseline points by searching outwards from the peak for where the gradient returns to near-zero.
+    # To avoid detecting the flat top of a broad peak as the baseline, the search starts a small
+    # distance (peak_offset) away from the peak's center.
+    peak_offset = 10
 
-    # Define search window for the first inflection point (before the peak)
-    start_search_idx_1 = inflection_search_crop_points
+    # Search backwards from (peak - offset) for the start of the baseline
+    baseline_start_idx = -1
+    start_search_before = peak_idx - peak_offset
+    # The loop safely handles cases where the start_search_before is out of bounds (e.g. < 0)
+    for i in range(start_search_before, -1, -1):
+        if abs(gradient[i]) < baseline_zero_grad_tolerance:
+            baseline_start_idx = i
+            break
+    if baseline_start_idx == -1:  # Fallback to the start of the segment
+        baseline_start_idx = 0
+
+    # Search forwards from (peak + offset) for the end of the baseline
+    baseline_end_idx = -1
+    start_search_after = peak_idx + peak_offset
+    # The loop safely handles cases where start_search_after is out of bounds
+    for i in range(start_search_after, len(gradient)):
+        if abs(gradient[i]) < baseline_zero_grad_tolerance:
+            baseline_end_idx = i
+            break
+    if baseline_end_idx == -1:  # Fallback to the end of the segment
+        baseline_end_idx = len(gradient) - 1
+
+    # 4. Find inflection points by searching for the maximum gradient between the baseline points and the peak.
+    # Define search window for the first inflection point (from baseline start to peak)
+    start_search_idx_1 = baseline_start_idx
     end_search_idx_1 = peak_idx
 
     if start_search_idx_1 >= end_search_idx_1:
@@ -315,9 +342,9 @@ def find_peak_characteristics(
 
     infl_idx_1 = start_search_idx_1 + np.argmax(np.abs(grad_before))
 
-    # Define search window for the second inflection point (after the peak)
+    # Define search window for the second inflection point (from peak to baseline end)
     start_search_idx_2 = peak_idx
-    end_search_idx_2 = n_points - inflection_search_crop_points
+    end_search_idx_2 = baseline_end_idx
 
     if start_search_idx_2 >= end_search_idx_2:
         return {}  # Search window is invalid or empty
@@ -327,23 +354,6 @@ def find_peak_characteristics(
         return {}
 
     infl_idx_2 = start_search_idx_2 + np.argmax(np.abs(grad_after))
-
-    # 4. Define baseline points by finding where gradient returns to zero
-    baseline_start_idx = -1
-    for i in range(infl_idx_1, -1, -1):
-        if abs(gradient[i]) < baseline_zero_grad_tolerance:
-            baseline_start_idx = i
-            break
-    if baseline_start_idx == -1:  # Fallback to the start of the segment
-        baseline_start_idx = 0
-
-    baseline_end_idx = -1
-    for i in range(infl_idx_2, len(gradient)):
-        if abs(gradient[i]) < baseline_zero_grad_tolerance:
-            baseline_end_idx = i
-            break
-    if baseline_end_idx == -1:  # Fallback to the end of the segment
-        baseline_end_idx = len(gradient) - 1
 
     # Data for baseline tangents
     t_bs, h_bs, g_bs = temperature[baseline_start_idx], heatflow[baseline_start_idx], gradient[baseline_start_idx]
@@ -370,13 +380,36 @@ def find_peak_characteristics(
         # Intersection of y = g2*(x-t2)+h2 and y = g_be*(x-t_be)+h_be
         t_end = (h_be - g_be * t_be - (h2 - g2 * t2)) / delta_g_end
 
+    # 7. Calculate the area of the peak by integrating after subtracting a linear baseline.
+    integration_indices = range(baseline_start_idx, baseline_end_idx + 1)
+    peak_area = 0.0
+    if len(integration_indices) >= 2:
+        temp_for_integration = temperature[integration_indices]
+        heatflow_for_integration = heatflow[integration_indices]
+        time_for_integration = segment[
+            integration_indices, 1
+        ]  # Extract time data for the peak
+
+        # Create a linear baseline between the start and end baseline points.
+        # np.interp is a convenient way to do linear interpolation.
+        baseline_heatflow = np.interp(
+            temp_for_integration, [t_bs, t_be], [h_bs, h_be]
+        )
+
+        # Subtract baseline from the actual heatflow
+        corrected_heatflow = heatflow_for_integration - baseline_heatflow
+
+        # To get area in J/g, we integrate heatflow (W/g) over time (s).
+        # This is equivalent to dividing the integral over temperature by the heating rate.
+        peak_area = np.trapezoid(corrected_heatflow, time_for_integration)
+
     # Plotting for troubleshooting
     if plot_for_troubleshooting:
         try:
             import matplotlib.pyplot as plt
         except ImportError:
             print("Matplotlib is required for troubleshooting plots. Please install it.")
-            return {"T_start": t_start, "T_peak": t_peak, "T_end": t_end}
+            return {"T_start": t_start, "T_peak": t_peak, "T_end": t_end, "Area": peak_area}
 
         fig, ax = plt.subplots(figsize=(10, 6))
 
@@ -412,6 +445,17 @@ def find_peak_characteristics(
         ax.axvline(t_peak, color='purple', linestyle=':', label=f'T_peak = {t_peak:.2f}', zorder=1)
         ax.axvline(t_end, color='green', linestyle=':', label=f'T_end = {t_end:.2f}', zorder=1)
 
+        # Shade the area under the peak for visualization
+        if len(integration_indices) >= 2:
+            ax.fill_between(
+                temp_for_integration,
+                baseline_heatflow,
+                heatflow_for_integration,
+                alpha=0.2,
+                color="cyan",
+                label=f"Peak Area: {peak_area:.2f}",
+            )
+
         ax.set_title("Peak Characteristics Analysis (Tangential Baseline)")
         ax.set_xlabel("Temperature")
         ax.set_ylabel("Heatflow")
@@ -419,51 +463,135 @@ def find_peak_characteristics(
         ax.grid(True, alpha=0.3)
         plt.show()
 
-    return {"T_start": t_start, "T_peak": t_peak, "T_end": t_end}
+    return {"T_start": t_start, "T_peak": t_peak, "T_end": t_end, "Area": peak_area}
+
+
+def analyze_all_segments(
+    data_array: np.ndarray, plot_each_segment: bool = False
+) -> np.ndarray:
+    """
+    Analyzes all heating/cooling segments in a DSC data array to find peak characteristics.
+
+    This function first splits the data into segments and then runs peak analysis on each one.
+
+    Args:
+        data_array (np.ndarray): The raw (N, 3) DSC data array from extract_first_three_columns.
+        plot_each_segment (bool): If True, a troubleshooting plot will be generated for each segment's analysis.
+
+    Returns:
+        np.ndarray: A (M, 4) numpy array where M is the number of segments with valid peaks.
+                    The columns are ['T_start', 'T_peak', 'T_end', 'Area'].
+                    Returns an empty array if no peaks are found.
+    """
+    segments = split_heating_cooling_segments(data_array)
+    if not segments:
+        return np.empty((0, 4), dtype=float)
+
+    all_peak_info = []
+    for i, segment in enumerate(segments):
+        print(f"\n--- Analyzing Segment {i+1} ---")
+        peak_info = find_peak_characteristics(
+            segment, plot_for_troubleshooting=plot_each_segment
+        )
+        if peak_info:
+            all_peak_info.append(peak_info)
+        else:
+            print(f"No valid peak found in Segment {i+1}.")
+
+    if not all_peak_info:
+        return np.empty((0, 4), dtype=float)
+
+    # Convert list of dicts to a numpy array, ensuring correct column order.
+    results_list = [
+        [info["T_start"], info["T_peak"], info["T_end"], info["Area"]]
+        for info in all_peak_info
+    ]
+    return np.asarray(results_list, dtype=float)
 
 
 if __name__ == "__main__":
+    import os
     from DSC_plotting import (
         plot_gradient_vs_temperature,
         plot_temperature_vs_heatflow,
     )
 
-    path = input("Enter path to the txt file: ").strip()
+    # Define the directory where data files are located.
+    # Please update this path to your data folder.
+    data_directory = "/Users/oliverreed/Library/CloudStorage/GoogleDrive-or280@cam.ac.uk/Shared drives/MET - ShapeMemoryAlloyResearch/Useful/Python Scripts/TestFiles"
+
+    filename = input("Enter the file name: ").strip()
+    path = os.path.join(data_directory, filename)
+
     data_array = extract_first_three_columns(path)
-    segments = split_heating_cooling_segments(data_array)
 
-    # Plot original data segments
-    if segments:
-        print(f"\nPlotting {len(segments)} identified segments.")
-        plot_temperature_vs_heatflow(segments, title="DSC Segments")
-    else:
-        print("No distinct heating/cooling segments found.")
-        # If no segments, but data exists, plot the raw data as a single curve
-        if data_array.size > 0:
-            print("Plotting raw data.")
-            plot_temperature_vs_heatflow(data_array, title="Raw DSC Data")
+    # Plot original data segments first
+    if data_array.size > 0:
+        segments = split_heating_cooling_segments(data_array)
+        if segments:
+            print(f"\nPlotting {len(segments)} identified segments.")
+            plot_temperature_vs_heatflow(segments, title="DSC Segments")
 
-    # Analyze and plot for the first segment
-    if segments:
-        print("\nAnalyzing the first segment for peak characteristics...")
-        first_segment = segments[0]
-
-        # Find and print peak characteristics
-        peak_info = find_peak_characteristics(first_segment, plot_for_troubleshooting=True)
-        if peak_info:
-            print("\nPeak Characteristics Found:")
-            print(f"  Start Temperature: {peak_info['T_start']:.2f}")
-            print(f"  Peak Temperature:  {peak_info['T_peak']:.2f}")
-            print(f"  End Temperature:   {peak_info['T_end']:.2f}")
+            # Plot the gradient for the first segment for checking
+            '''
+            print("\nPlotting gradient for the first segment...")
+            first_segment = segments[0]
+            gradient = calculate_gradient(first_segment)
+            #plot_gradient_vs_temperature(
+                first_segment, gradient, title="Gradient for First Segment"
+            )
+            '''
         else:
-            print("\nCould not determine peak characteristics for the first segment.")
+            print("No distinct heating/cooling segments found. Plotting raw data.")
+            plot_temperature_vs_heatflow(data_array, title="Raw DSC Data")
+    else:
+        print("No data found in the file.")
 
-        # Calculate and plot gradient
-        '''
-        gradient = calculate_gradient(first_segment, noise_threshold=0.02)
-        plot_gradient_vs_temperature(
-            first_segment,
-            gradient,
-            title="Gradient of First Segment",
-        )
-        '''
+    # Analyze all segments and display the results
+    if data_array.size > 0:
+        print("\nAnalyzing all segments for peak characteristics...")
+        # Set plot_each_segment=True to see the analysis for each peak
+        all_peaks_data = analyze_all_segments(data_array, plot_each_segment=False)
+
+        if all_peaks_data.size > 0:
+            print("\n--- Summary of Peak Characteristics ---")
+            print(
+                f"{'Segment':<10}{'T_start':<15}{'T_peak':<15}{'T_end':<15}{'Area (J/g)':<15}"
+            )
+            print("-" * 70)
+            for i, row in enumerate(all_peaks_data):
+                print(
+                    f"{i + 1:<10}{row[0]:<15.2f}{row[1]:<15.2f}{row[2]:<15.2f}{row[3]:<15.2f}"
+                )
+            print("-" * 70)
+
+            # Save the results to a CSV file
+            try:
+                base_name, _ = os.path.splitext(filename)
+                output_csv_name = f"{base_name}_peak_analysis_results.csv"
+                output_csv_path = os.path.join(data_directory, output_csv_name)
+
+                # Add a 'Segment' column to the data for the CSV file
+                segment_column = np.arange(1, all_peaks_data.shape[0] + 1).reshape(
+                    -1, 1
+                )
+                data_to_save = np.hstack((segment_column, all_peaks_data))
+
+                header = "Segment,T_start,T_peak,T_end,Area (J/g)"
+
+                np.savetxt(
+                    output_csv_path,
+                    data_to_save,
+                    delimiter=",",
+                    header=header,
+                    comments="",
+                    fmt="%.4f",
+                )
+
+                print(f"\nAnalysis results successfully saved to:\n{output_csv_path}")
+
+            except IOError as e:
+                print(f"\nError: Could not save results to CSV file. {e}")
+
+        else:
+            print("\nNo valid peaks were found in any segment.")
