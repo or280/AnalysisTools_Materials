@@ -13,7 +13,7 @@ function ZeroStrain(strainwave)
 	Duplicate strainwave, Strain
 	Strain -= strainwave[0]
 	
-end function
+end
 
 // Separates ratchet test into individual waves for each cycle, cycles is number of cycles performed
 // If a ratchet test, set cycles to 0 and the script will calculate the number of cycles
@@ -109,7 +109,7 @@ function PlotCycles(strainwave1, stresswave, cycles)
 	
 	killwaves strainwave
 	
-end function
+end
 
 
 //Colours traces progressively based on a designated colourtable, taken from online.
@@ -173,7 +173,7 @@ function/WAVE FindCycles(stresswave, cycles)
 	
 	return cyclepositions
 	
-end function
+end
 
 // Find and plot the hysteresis area of each cycle
 function PlotArea(cycles)
